@@ -18,6 +18,8 @@ class GameClient:
         self.BACKEND_BASE = 'goldrush.monad.fi/backend'
         self.game_state = None
         self.ws = None
+        self.entityId = None
+        self.ready_to_start = threading.Event()
 
     def message(self, action, payload=None):
         return json.dumps([action, payload or {}])
@@ -62,21 +64,25 @@ class GameClient:
         return response.json()
 
     def on_message(self, ws, message):
-        action, payload = json.loads(message)
-        if action != 'game-instance':
-            print([action, payload])
-            return
-
-        self.game_state = json.loads(payload['gameState'])
+        # debug log
+        print(f"Received message: {message}")  
+        try:
+            action, payload = json.loads(message)
+            if action == 'game-instance':
+                self.game_state = payload['gameState']  
+                self.ready_to_start.set()
+            else:
+                print(f"Unhandled action type: {action}")
+        except Exception as e:
+            print(f"Error processing message: {e}")
 
     def action_loop(self):
+        self.ready_to_start.wait()
         while True:
             if self.game_state:
-                command = self.generate_action(self.game_state)
-                self.ws.send(self.message('run-command', {'gameId': self.game_state['entityId'], 'payload': command}))
-                
+                command = self.generate_action(json.loads(self.game_state))  
+                self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))
                 self.game_state = None
-            
             time.sleep(0.1)
 
     def start(self):
@@ -84,18 +90,18 @@ class GameClient:
         if not game:
             return
 
-        url = f'https://{self.FRONTEND_BASE}/?id={game["entityId"]}'
+        self.entityId = game['entityId'] 
+        url = f'https://{self.FRONTEND_BASE}/?id={self.entityId}'
         print(f'Game at {url}')
         webbrowser.open(url)
 
         ws_url = f'wss://{self.BACKEND_BASE}/{self.PLAYER_TOKEN}/'
-        self.ws = websocket.WebSocketApp(ws_url, on_message=self.on_message)
-        self.ws.on_open = lambda ws: self.ws.send(self.message('sub-game', {'id': game['entityId']}))
+        self.ws = websocket.WebSocketApp(ws_url,
+                                         on_message=self.on_message,
+                                         on_open=lambda ws: self.ws.send(self.message('sub-game', {'id': self.entityId})))
 
-        
+        threading.Thread(target=self.ws.run_forever).start()
         threading.Thread(target=self.action_loop).start()
-
-        self.ws.run_forever()
 
 if __name__ == "__main__":
     client = GameClient()

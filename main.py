@@ -67,7 +67,7 @@ class GameClient:
                     current_node.surrounding_nodes.add(new_coord)
                     surrounding_node.surrounding_nodes.add(current_coords)
     
-    def a_star_path_to_closest(self):
+    def a_star(self, target_coords):
         open_set = set([self.current_node.coords])  # Start with the current node
         came_from = {}  # For path reconstruction
 
@@ -75,12 +75,12 @@ class GameClient:
         g_score[self.current_node.coords] = 0  # Cost from start to start is zero
 
         f_score = {node: float('inf') for node in self.all_nodes}  # default score to infinity
-        f_score[self.current_node.coords] = distance.euclidean(self.current_node.coords, self.closest_node.coords)  # Heuristic cost estimate to goal
+        f_score[self.current_node.coords] = distance.euclidean(self.current_node.coords, target_coords)  # Heuristic cost estimate to goal
 
         while open_set:
             # Node in open set with the lowest f_score
             current = min(open_set, key=lambda coord: f_score[coord])
-            if current == self.closest_node.coords:
+            if current == target_coords:
                 return self.reconstruct_path(came_from, current)
 
             open_set.remove(current)
@@ -91,7 +91,7 @@ class GameClient:
                     # This path to neighbor is better than any previous one. Record it!
                     came_from[neighbor_coords] = current
                     g_score[neighbor_coords] = tentative_g_score
-                    f_score[neighbor_coords] = g_score[neighbor_coords] + distance.euclidean(neighbor_coords, self.closest_node.coords)
+                    f_score[neighbor_coords] = g_score[neighbor_coords] + distance.euclidean(neighbor_coords, target_coords)
                     if neighbor_coords not in open_set:
                         open_set.add(neighbor_coords)
 
@@ -99,7 +99,6 @@ class GameClient:
         return []
 
     def reconstruct_path(self, came_from, current):
-        
         total_path = [current]
         while current in came_from:
             current = came_from[current]
@@ -128,8 +127,9 @@ class GameClient:
 
         return surrounding_coords
 
-    def check_for_surrounding_nodes(self, player, square):
+    def check_for_surrounding_nodes(self, player, square, current_node: Node):
         surrounding_coords = self.get_surrounding_coords(player, square)
+        current_node.surrounding_nodes.update(surrounding_coords)
 
         surrounding_nodes = []
         for new_coords in surrounding_coords:
@@ -138,19 +138,42 @@ class GameClient:
                 new_node = self.all_nodes[new_coords]     
             else:
                 new_node = self.add_new_node(new_coords, is_explored=False)
-                
+
+            new_node.surrounding_nodes.add(current_node.coords)
             surrounding_nodes.append(new_node)
 
         return surrounding_nodes
     
     
-    def update_closest_node(self):
+    '''def update_closest_node(self):
         unexplored_nodes = {node_id: node for node_id, node in self.all_nodes.items() if not node.explored}
         
         if not unexplored_nodes:
             return None  
         
-        self.closest_node = min(unexplored_nodes.values(), key=lambda node: node.distance)
+        self.closest_node = min(unexplored_nodes.values(), key=lambda node: node.distance)'''
+    
+    def update_closest_node(self):
+        unexplored_nodes = {node_id: node for node_id, node in self.all_nodes.items() if not node.explored}
+        
+        assert len(unexplored_nodes) != 0
+        
+        min_score = float('inf')
+        closest_node = None
+        
+        for node_coords, node in unexplored_nodes.items():
+            path = self.a_star(node_coords)
+            # discount the path to node somewhat so we wont enter a never ending spiral of getting further away
+            path_length = len(path) / 2
+            
+            if path_length > 0:  
+                score = node.distance + path_length
+                
+                if score < min_score:
+                    min_score = score
+                    closest_node = node
+        
+        self.closest_node = closest_node
 
     
     def add_new_node(self, current_coords, is_explored):
@@ -170,7 +193,6 @@ class GameClient:
         new_rotation = convert[diff]
 
         if new_rotation == curr_rotation:
-            self.path_to_closest.pop(0)
             return {
                 'action': 'move',
             }
@@ -178,7 +200,8 @@ class GameClient:
         else:
             return {
                 'action': 'rotate',
-                'rotation': new_rotation}
+                'rotation': new_rotation,
+                }
 
     def generate_action(self, game_state):
         #print(game_state)
@@ -194,10 +217,12 @@ class GameClient:
             self.current_node = explored_nodes[current_coords]         
         else:
             self.current_node = self.add_new_node(current_coords, is_explored=True)
-            self.check_for_surrounding_nodes(player, square)
-            self.update_all_node_connections()
-            self.update_closest_node()
-            self.path_to_closest = self.a_star_path_to_closest()
+
+        # checking for new connections and repathing incase we find a better path through 2 already discovered nodes
+        self.check_for_surrounding_nodes(player, square, self.current_node)
+        #self.update_all_node_connections()
+        self.update_closest_node()
+        self.path_to_closest = self.a_star(self.closest_node.coords)
 
         assert len(self.path_to_closest) != 0
 
@@ -207,20 +232,7 @@ class GameClient:
         next_move = self.generate_step(next_coords, curr_rotation)
 
         return next_move
-        ''' walls = self.get_walls(square)
 
-        if walls.get(rotation, False):
-            possible_directions = [rot for rot, wall in walls.items() if not wall]
-            new_rotation = random.choice(possible_directions) if possible_directions else 0
-
-            return {
-                'action': 'rotate',
-                'rotation': new_rotation,
-            }
-        else:
-            return {
-                'action': 'move',
-            }'''
 
     def create_game(self):
         url = f'https://{self.BACKEND_BASE}/api/levels/{self.LEVEL_ID}'

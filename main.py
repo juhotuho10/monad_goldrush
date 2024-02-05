@@ -7,8 +7,18 @@ import websocket
 from dotenv import load_dotenv
 import threading
 import time
+from dataclasses import dataclass, field
+import numpy as np
+from scipy.spatial import distance
 
 load_dotenv()
+
+@dataclass
+class Node():
+    coords: tuple = field(default_factory=tuple)   # (x, y)
+    explored: bool = False
+    distance: float = float('inf')  
+    surrounding_nodes: set = field(default_factory=set)  
 
 class GameClient:
     def __init__(self):
@@ -20,6 +30,16 @@ class GameClient:
         self.ws = None
         self.entityId = None
         self.ready_to_start = threading.Event()
+        self.initialized = False
+        
+        self.all_nodes = {}
+        self.unsearched_nodes = {}
+        self.current_node = None
+        self.closest_node = None
+        self.goal_node = None
+
+        self.path_to_closest = []
+
 
     def message(self, action, payload=None):
         return json.dumps([action, payload or {}])
@@ -33,14 +53,78 @@ class GameClient:
             270: (square & masks[3]) != 0,
         }
 
-    def generate_action(self, game_state):
-        player, square = game_state['player'], game_state['square']
+    def direction_to_coords(self, direction, coords):
+        convert = {0: (0, -1), 90: (1, 0), 180: (0, 1), 270: (-1, 0)}
+        change = convert[direction]
+        x = coords[0] + change[0]
+        y = coords[1] + change[1]
+
+        return (x, y)
+    
+    def get_surrounding_coords(self, player, square):
+        surrounding_coords = []
+        walls = self.get_walls(square)
+        position = tuple(player["position"].values())
         rotation = player['rotation']
+        if walls.get(rotation, False):
+            possible_directions = [rot for rot, wall in walls.items() if not wall]
+            for dir in possible_directions:
+                new_coords = self.direction_to_coords(dir, position)
+                surrounding_coords.append(new_coords)
+
+        return surrounding_coords
+
+
+    def get_surrounding_nodes(self, player, square, current_node: Node):
+        surrounding_coords = self.get_surrounding_coords(player, square)
+
+        surrounding_nodes = []
+        for new_coords in surrounding_coords:
+
+            if new_coords in self.all_nodes:
+                new_node = self.all_nodes[new_coords]     
+            else:
+                dist = distance.euclidean(new_coords, self.goal_node.coords)
+                new_node = Node(coords=new_coords, surrounding_nodes=[current_node], distance=dist)
+                self.all_nodes[new_coords] = new_node
+                
+            surrounding_nodes.append(new_node)
+
+        return surrounding_nodes
+
+
+    def generate_action(self, game_state):
+        print(game_state)
+        player, square = game_state['player'], game_state['square']
+        current_coords = tuple(player['position'].values())
+
+        if self.goal_node is None:
+            goal_coords = tuple(game_state["target"].values())
+            self.goal_node = Node(coords=goal_coords, distance=0)
+
+        if current_coords in self.all_nodes:
+            self.current_node = self.all_nodes[current_coords]         
+        else:
+            dist = distance.euclidean(current_coords, self.goal_node.coords)
+            self.current_node = Node(coords=current_coords, explored=True, distance=dist)
+            self.all_nodes[current_coords] = self.current_node
+
+        if not self.path_to_closest:
+            new_nodes = self.get_surrounding_nodes(player, square, self.current_node)
+
+            for node in new_nodes:
+                # set wont have duplicates
+                self.current_node.surrounding_nodes.add(node)
+
+        rotation = player['rotation']
+
+        print(game_state["target"])
 
         walls = self.get_walls(square)
 
         if walls.get(rotation, False):
             possible_directions = [rot for rot, wall in walls.items() if not wall]
+            print(possible_directions)
             new_rotation = random.choice(possible_directions) if possible_directions else 0
 
             return {
@@ -65,7 +149,7 @@ class GameClient:
 
     def on_message(self, ws, message):
         # debug log
-        print(f"Received message: {message}")  
+        # print(f"Received message: {message}")  
         try:
             action, payload = json.loads(message)
             if action == 'game-instance':
@@ -76,14 +160,16 @@ class GameClient:
         except Exception as e:
             print(f"Error processing message: {e}")
 
+
     def action_loop(self):
         self.ready_to_start.wait()
         while True:
+            time.sleep(0.1)
             if self.game_state:
                 command = self.generate_action(json.loads(self.game_state))  
                 self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))
                 self.game_state = None
-            time.sleep(0.1)
+            
 
     def start(self):
         game = self.create_game()

@@ -33,7 +33,6 @@ class GameClient:
         self.initialized = False
         
         self.all_nodes = {}
-        self.unsearched_nodes = {}
         self.current_node = None
         self.closest_node = None
         self.goal_node = None
@@ -52,6 +51,21 @@ class GameClient:
             180: (square & masks[2]) != 0,
             270: (square & masks[3]) != 0,
         }
+    
+    def update_all_surrounding_nodes(self):
+        for current_coords, current_node in self.all_nodes.items():
+            x, y = current_coords 
+            potential_surroundings = [
+                (x + 1, y),  
+                (x - 1, y),  
+                (x, y + 1),  
+                (x, y - 1),  
+            ]
+            for new_coord in potential_surroundings:
+                if new_coord in self.all_nodes:
+                    surrounding_node = self.all_nodes[new_coord]
+                    current_node.surrounding_nodes.add(new_coord)
+                    surrounding_node.surrounding_nodes.add(current_coords)
 
     def direction_to_coords(self, direction, coords):
         convert = {0: (0, -1), 90: (1, 0), 180: (0, 1), 270: (-1, 0)}
@@ -65,17 +79,15 @@ class GameClient:
         surrounding_coords = []
         walls = self.get_walls(square)
         position = tuple(player["position"].values())
-        rotation = player['rotation']
-        if walls.get(rotation, False):
-            possible_directions = [rot for rot, wall in walls.items() if not wall]
-            for dir in possible_directions:
-                new_coords = self.direction_to_coords(dir, position)
-                surrounding_coords.append(new_coords)
+        possible_directions = [rot for rot, wall in walls.items() if not wall]
+
+        for dir in possible_directions:
+            new_coords = self.direction_to_coords(dir, position)
+            surrounding_coords.append(new_coords)
 
         return surrounding_coords
 
-
-    def get_surrounding_nodes(self, player, square, current_node: Node):
+    def add_new_surrounding_nodes(self, player, square):
         surrounding_coords = self.get_surrounding_coords(player, square)
 
         surrounding_nodes = []
@@ -85,16 +97,27 @@ class GameClient:
                 new_node = self.all_nodes[new_coords]     
             else:
                 dist = distance.euclidean(new_coords, self.goal_node.coords)
-                new_node = Node(coords=new_coords, surrounding_nodes=[current_node], distance=dist)
+                new_node = Node(coords=new_coords, distance=dist)
                 self.all_nodes[new_coords] = new_node
                 
             surrounding_nodes.append(new_node)
 
         return surrounding_nodes
+    
+    
+    def get_closest_node(self):
+        unexplored_nodes = {node_id: node for node_id, node in self.all_nodes.items() if not node.explored}
+        
+        if not unexplored_nodes:
+            return None  
+        
+        closest_node = min(unexplored_nodes.values(), key=lambda node: node.distance)
+        
+        return closest_node
 
 
     def generate_action(self, game_state):
-        print(game_state)
+        #print(game_state)
         player, square = game_state['player'], game_state['square']
         current_coords = tuple(player['position'].values())
 
@@ -108,23 +131,19 @@ class GameClient:
             dist = distance.euclidean(current_coords, self.goal_node.coords)
             self.current_node = Node(coords=current_coords, explored=True, distance=dist)
             self.all_nodes[current_coords] = self.current_node
+            self.add_new_surrounding_nodes(player, square)
+            self.update_all_surrounding_nodes()
+            self.closest_node = self.get_closest_node()
 
         if not self.path_to_closest:
-            new_nodes = self.get_surrounding_nodes(player, square, self.current_node)
-
-            for node in new_nodes:
-                # set wont have duplicates
-                self.current_node.surrounding_nodes.add(node)
-
+            pass
+  
         rotation = player['rotation']
-
-        print(game_state["target"])
 
         walls = self.get_walls(square)
 
         if walls.get(rotation, False):
             possible_directions = [rot for rot, wall in walls.items() if not wall]
-            print(possible_directions)
             new_rotation = random.choice(possible_directions) if possible_directions else 0
 
             return {

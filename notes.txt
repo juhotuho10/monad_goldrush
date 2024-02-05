@@ -1,3 +1,5 @@
+x = done
+
 x    get current
 x    get goal
 
@@ -5,54 +7,53 @@ x    all nodes [][]
 x    unknown nodes []
 
 x    curent node
-    closest node 
+x    closest node 
 x    goal node 
 
 x    path to closes = []
 
     while current node != goal
-        get new unknown
-        calc new unknown distance to goal
-        append to all new and unknown
-        check which unknown closest to goal
-        update closest node
+x        get new unknown
+x        calc new unknown distance to goal
+x        append to all new and unknown
+x        check which unknown closest to goal
+x        update closest node
         path how to get to closest node using all nodes (hard. A star?)
         get to closest node (hard)
-        remove closest node from unknown
-        update current node
+x        update current node
 
     ------------------------------------------------------------------------------------------------------------------------------------
 
-    Dataclass
-    node:
-        coords (x, y)
-        dist to goal
-        surrounding nodes [(x,y), (x,y)]
+x    Dataclass
+x    node:
+x        coords (x, y)
+x        dist to goal
+x        surrounding nodes [(x,y), (x,y)]
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+x
+x    find path to closest(target, current_node, current_path):
+x        get surrounding
+x        surrounding not in current path
+x        if target in surrounding:
+x            current_path += target
+x            return current_path
+x
+x        for coords in surrounding:
+x            new_node = all nodes [coords]
+x            final path = find path to closest(target, new current, current_path + new current_node)
+x
+x        return final path
 
     ------------------------------------------------------------------------------------------------------------------------------------
 
-    find path to closest(target, current_node, current_path):
-        get surrounding
-        surrounding not in current path
-        if target in surrounding:
-            current_path += target
-            return current_path
-
-        for coords in surrounding:
-            new_node = all nodes [coords]
-            final path = find path to closest(target, new current, current_path + new current_node)
-
-        return final path
-
-    ------------------------------------------------------------------------------------------------------------------------------------
-
-    direction to the next block (current coords, next coords):
-        return the direction needed (0, 90, 180, 270)
+x    direction to the next block (current coords, next coords):
+x        return the direction needed (0, 90, 180, 270)
 
 
     ------------------------------------------------------------------------------------------------------------------------------------
 
-    if direction != target dir:
-        ratate
-    move forward
+x    if direction != target dir:
+x        ratate
+x    move forward
 

@@ -15,10 +15,10 @@ load_dotenv()
 
 @dataclass
 class Node():
-    coords: tuple = field(default_factory=tuple)   # (x, y)
+    coords: tuple = field(default_factory=tuple) # (x, y)
     explored: bool = False
     distance: float = float('inf')  
-    surrounding_nodes: set = field(default_factory=set)  
+    surrounding_nodes: set = field(default_factory=set) # {(x, y), (x, y)}
 
 class GameClient:
     def __init__(self):
@@ -32,7 +32,7 @@ class GameClient:
         self.ready_to_start = threading.Event()
         self.initialized = False
         
-        self.all_nodes = {}
+        self.all_nodes = {} # coords: Node
         self.current_node = None
         self.closest_node = None
         self.goal_node = None
@@ -52,7 +52,7 @@ class GameClient:
             270: (square & masks[3]) != 0,
         }
     
-    def update_all_surrounding_nodes(self):
+    def update_all_node_connections(self):
         for current_coords, current_node in self.all_nodes.items():
             x, y = current_coords 
             potential_surroundings = [
@@ -66,6 +66,47 @@ class GameClient:
                     surrounding_node = self.all_nodes[new_coord]
                     current_node.surrounding_nodes.add(new_coord)
                     surrounding_node.surrounding_nodes.add(current_coords)
+    
+    def a_star_path_to_closest(self):
+        open_set = set([self.current_node.coords])  # Start with the current node
+        came_from = {}  # For path reconstruction
+
+        g_score = {node: float('inf') for node in self.all_nodes}  # default score to infinity
+        g_score[self.current_node.coords] = 0  # Cost from start to start is zero
+
+        f_score = {node: float('inf') for node in self.all_nodes}  # default score to infinity
+        f_score[self.current_node.coords] = distance.euclidean(self.current_node.coords, self.closest_node.coords)  # Heuristic cost estimate to goal
+
+        while open_set:
+            # Node in open set with the lowest f_score
+            current = min(open_set, key=lambda coord: f_score[coord])
+            if current == self.closest_node.coords:
+                return self.reconstruct_path(came_from, current)
+
+            open_set.remove(current)
+            for neighbor_coords in self.all_nodes[current].surrounding_nodes:
+                tentative_g_score = g_score[current] + distance.euclidean(current, neighbor_coords)
+
+                if tentative_g_score < g_score[neighbor_coords]:
+                    # This path to neighbor is better than any previous one. Record it!
+                    came_from[neighbor_coords] = current
+                    g_score[neighbor_coords] = tentative_g_score
+                    f_score[neighbor_coords] = g_score[neighbor_coords] + distance.euclidean(neighbor_coords, self.closest_node.coords)
+                    if neighbor_coords not in open_set:
+                        open_set.add(neighbor_coords)
+
+        # empty path if no path found
+        return []
+
+    def reconstruct_path(self, came_from, current):
+        
+        total_path = [current]
+        while current in came_from:
+            current = came_from[current]
+            total_path.append(current)
+        total_path.reverse()
+        return total_path[1:]
+
 
     def direction_to_coords(self, direction, coords):
         convert = {0: (0, -1), 90: (1, 0), 180: (0, 1), 270: (-1, 0)}
@@ -87,7 +128,7 @@ class GameClient:
 
         return surrounding_coords
 
-    def add_new_surrounding_nodes(self, player, square):
+    def check_for_surrounding_nodes(self, player, square):
         surrounding_coords = self.get_surrounding_coords(player, square)
 
         surrounding_nodes = []
@@ -96,25 +137,48 @@ class GameClient:
             if new_coords in self.all_nodes:
                 new_node = self.all_nodes[new_coords]     
             else:
-                dist = distance.euclidean(new_coords, self.goal_node.coords)
-                new_node = Node(coords=new_coords, distance=dist)
-                self.all_nodes[new_coords] = new_node
+                new_node = self.add_new_node(new_coords, is_explored=False)
                 
             surrounding_nodes.append(new_node)
 
         return surrounding_nodes
     
     
-    def get_closest_node(self):
+    def update_closest_node(self):
         unexplored_nodes = {node_id: node for node_id, node in self.all_nodes.items() if not node.explored}
         
         if not unexplored_nodes:
             return None  
         
-        closest_node = min(unexplored_nodes.values(), key=lambda node: node.distance)
-        
-        return closest_node
+        self.closest_node = min(unexplored_nodes.values(), key=lambda node: node.distance)
 
+    
+    def add_new_node(self, current_coords, is_explored):
+        dist = distance.euclidean(current_coords, self.goal_node.coords)
+        new_node = Node(coords=current_coords, explored=is_explored, distance=dist)
+        self.all_nodes[current_coords] = new_node
+
+        return new_node
+    
+    def generate_step(self, next_coords, curr_rotation):
+        current_coords = self.current_node.coords
+        x_diff = next_coords[0] - current_coords[0] 
+        y_diff = next_coords[1] - current_coords[1] 
+        diff = (x_diff, y_diff)
+
+        convert = {(0, -1): 0, (1, 0): 90, (0, 1): 180, (-1, 0): 270}
+        new_rotation = convert[diff]
+
+        if new_rotation == curr_rotation:
+            self.path_to_closest.pop(0)
+            return {
+                'action': 'move',
+            }
+
+        else:
+            return {
+                'action': 'rotate',
+                'rotation': new_rotation}
 
     def generate_action(self, game_state):
         #print(game_state)
@@ -125,22 +189,25 @@ class GameClient:
             goal_coords = tuple(game_state["target"].values())
             self.goal_node = Node(coords=goal_coords, distance=0)
 
-        if current_coords in self.all_nodes:
-            self.current_node = self.all_nodes[current_coords]         
+        explored_nodes = {coords: node for coords, node in self.all_nodes.items() if node.explored}
+        if current_coords in explored_nodes:
+            self.current_node = explored_nodes[current_coords]         
         else:
-            dist = distance.euclidean(current_coords, self.goal_node.coords)
-            self.current_node = Node(coords=current_coords, explored=True, distance=dist)
-            self.all_nodes[current_coords] = self.current_node
-            self.add_new_surrounding_nodes(player, square)
-            self.update_all_surrounding_nodes()
-            self.closest_node = self.get_closest_node()
+            self.current_node = self.add_new_node(current_coords, is_explored=True)
+            self.check_for_surrounding_nodes(player, square)
+            self.update_all_node_connections()
+            self.update_closest_node()
+            self.path_to_closest = self.a_star_path_to_closest()
 
-        if not self.path_to_closest:
-            pass
-  
-        rotation = player['rotation']
+        assert len(self.path_to_closest) != 0
 
-        walls = self.get_walls(square)
+        curr_rotation = player['rotation']
+        next_coords = self.path_to_closest[0]
+
+        next_move = self.generate_step(next_coords, curr_rotation)
+
+        return next_move
+        ''' walls = self.get_walls(square)
 
         if walls.get(rotation, False):
             possible_directions = [rot for rot, wall in walls.items() if not wall]
@@ -153,7 +220,7 @@ class GameClient:
         else:
             return {
                 'action': 'move',
-            }
+            }'''
 
     def create_game(self):
         url = f'https://{self.BACKEND_BASE}/api/levels/{self.LEVEL_ID}'

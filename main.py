@@ -108,7 +108,7 @@ class GameClient:
                 return self.reconstruct_path(came_from, current)
             
             for neighbor_coords in self.all_nodes[current].surrounding_nodes:
-                tentative_g_score = g_score[current] + self.get_distance(current, neighbor_coords)
+                tentative_g_score = g_score[current] + 1
                 
                 if tentative_g_score < g_score.get(neighbor_coords, float('inf')):
                     came_from[neighbor_coords] = current
@@ -136,27 +136,52 @@ class GameClient:
 
         return (x, y)
     
-    def get_surrounding_coords(self, player: Dict[str, Any], square: int) -> List[Tuple[int, int]]:
+    def get_surrounding_coords(self, current_coords: Tuple[int, int], square: int) -> Set[Tuple[int, int]]:
         # gets valid coordinates surrounding the player
-        surrounding_coords = []
+        surrounding_coords = set()
         walls = self.get_walls(square)
-        position = tuple(player["position"].values())
         possible_directions = [rot for rot, wall in walls.items() if not wall]
-
         for dir in possible_directions:
-            new_coords = self.direction_to_coords(dir, position)
-            surrounding_coords.append(new_coords)
+            new_coords = self.direction_to_coords(dir, current_coords)
+            surrounding_coords.add(new_coords)
 
         return surrounding_coords
+    
+    def get_diagonal_neighbours(self, current_coords: Tuple[int, int], surrounding_coords: set) -> Set[Tuple[int, int]]:
+        valid_diag_diff = ((-1, 1), (1, 1), (1, -1), (-1, -1))
+        valid_diag_coords = set()
+        for coord in surrounding_coords:
+            if coord in self.all_nodes:
+                # get neighbours neighbour coords
+                neighbour_nodes = self.all_nodes[coord]
+                new_neighbour_coords = neighbour_nodes.surrounding_nodes
+                for neighbour_coords in new_neighbour_coords:
+                    # if difference between neighbours neighbour coord is in valid_diag_neighbours
+                    # that means that we can go diagonally there and we will add it to neighbours
+                    diff = tuple(np.array(neighbour_coords) - current_coords)
+                    if diff in valid_diag_diff:
+                        valid_diag_coords.add(neighbour_coords)
 
-    def check_for_surrounding_nodes(self, player: Dict[str, Any], square: int, current_node: Node):
-        # checks the nodes surrounding the player, updates the dictionary of all known coordinates
-        # and updates the surrounding node coordinates for current node as well as surrounding nodes
-        surrounding_coords = self.get_surrounding_coords(player, square)
+        
+        return valid_diag_coords
+
+    def update_surrounding_nodes(self, square: int, current_node: Node):
+        # checks the nodes surrounding the player, updates the coordinates set
+        
+        current_coords = current_node.coords
+
+        # get coords that are 1 away (1,0), (-1,0), etc that we can move to
+        surrounding_coords = self.get_surrounding_coords(current_coords, square)
+
+        # only gets known diagonal coords
+        valid_diag_neighbours = self.get_diagonal_neighbours(current_coords, surrounding_coords)
+        
+        # add all valid neighbours together
+        surrounding_coords.update(valid_diag_neighbours)
+
         current_node.surrounding_nodes.update(surrounding_coords)
 
         for new_coords in surrounding_coords:
-
             if new_coords in self.all_nodes:
                 new_node = self.all_nodes[new_coords]     
             else:
@@ -197,44 +222,23 @@ class GameClient:
 
     def add_new_node(self, current_coords: Tuple[int, int], is_explored: bool) -> Node:
         # adds a new node class to coordinates and adds the node to the all nodes dictionary
-        dist = distance.euclidean(current_coords, self.goal_node.coords)
+        dist = self.get_distance(current_coords, self.goal_node.coords)
         new_node = Node(coords=current_coords, explored=is_explored, distance=dist)
         self.all_nodes[current_coords] = new_node
 
         return new_node
     
-    
+
     def generate_step(self, curr_rotation: int) -> Dict[str, Any]:
         # based on the x and y difference of current node and destination node, this generates the wanted rotation
         current_coords = self.current_node.coords
-        if len(self.path_to_closest) > 1:
-            next_2_coords = self.path_to_closest[1]
-
-            diff_2 = tuple(np.array(next_2_coords) - current_coords)
-            convert_2 = {(1, -1): 45, (1, 1): 135, (-1, 1): 225, (-1, -1): 315}
-            
-            # if we cant step diagonally, then we default to going 1 step at a time sideways
-            if diff_2 in convert_2:
-                new_rotation = convert_2[diff_2]
-                # if we are already correctly rotated, then just move forward
-                if new_rotation == curr_rotation:
-                    self.path_to_closest = self.path_to_closest[2:]
-                    return {
-                        'action': 'move',
-                    }
-
-                else:
-                    return {
-                        'action': 'rotate',
-                        'rotation': new_rotation,
-                        }
-
         
         next_coords = self.path_to_closest[0]
-        diff = tuple(np.array(next_coords) - current_coords)
+        x, y = tuple(np.array(next_coords) - current_coords)
 
-        convert = {(0, -1): 0, (1, 0): 90, (0, 1): 180, (-1, 0): 270}
-        new_rotation = convert[diff]
+        # difference to angle conversion:
+        #(0, -1): 0, (1, 0): 90, (0, 1): 180, (-1, 0): 270, (1, -1): 45... etc.
+        new_rotation = (90 + np.degrees(np.arctan2(y, x))) % 360
 
         # if we are already correctly rotated, then just move forward
         if new_rotation == curr_rotation:
@@ -248,6 +252,7 @@ class GameClient:
                 'action': 'rotate',
                 'rotation': new_rotation,
                 }
+    
 
     def generate_action(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         # update values based on game state
@@ -269,7 +274,7 @@ class GameClient:
         else:
             # if the node is new, we add it to all nodes, update surroundings and do new pathing calculations
             self.current_node = self.add_new_node(current_coords, is_explored=True)
-            self.check_for_surrounding_nodes(player, square, self.current_node)
+            self.update_surrounding_nodes(square, self.current_node)
             self.update_closest_node()
             # coordinate path to the node that is estimated to be closest to goal node
             if len(self.path_to_closest) == 0:

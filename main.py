@@ -59,6 +59,14 @@ class GameClient:
         else:
             print("no optimal path found for level")
             return None
+        
+    def save_optimal_apth(self):
+        # calculates the optimal path to the goal to use in the next run
+        if not os.path.exists(self.optimal_path_file) and self.optimal_path is not None:
+            print("Saving optimal path")
+            optimal_path = self.a_star(self.starting_coords, self.goal_node.coords)
+            with open(self.optimal_path_file, 'wb') as file:
+                pickle.dump(optimal_path, file)
 
     def message(self, action: str, payload=None):
         return json.dumps([action, payload or {}])
@@ -191,19 +199,42 @@ class GameClient:
 
         return new_node
     
-    def generate_step(self, next_coords: Tuple[int, int], curr_rotation: int) -> Dict[str, Any]:
+    
+    
+    def generate_step(self, curr_rotation: int) -> Dict[str, Any]:
         # based on the x and y difference of current node and destination node, this generates the wanted rotation
         current_coords = self.current_node.coords
-        x_diff = next_coords[0] - current_coords[0] 
-        y_diff = next_coords[1] - current_coords[1] 
-        diff = (x_diff, y_diff)
+        if len(self.path_to_closest) > 1:
+            next_2_coords = self.path_to_closest[1]
+
+            diff_2 = tuple(np.array(next_2_coords) - current_coords)
+            convert_2 = {(1, -1): 45, (1, 1): 135, (-1, 1): 225, (-1, -1): 315}
+
+            if diff_2 in convert_2:
+                new_rotation = convert_2[diff_2]
+                # if we are already correctly rotated, then just move forward
+                if new_rotation == curr_rotation:
+                    self.path_to_closest = self.path_to_closest[2:]
+                    return {
+                        'action': 'move',
+                    }
+
+                else:
+                    return {
+                        'action': 'rotate',
+                        'rotation': new_rotation,
+                        }
+
+        
+        next_coords = self.path_to_closest[0]
+        diff = tuple(np.array(next_coords) - current_coords)
 
         convert = {(0, -1): 0, (1, 0): 90, (0, 1): 180, (-1, 0): 270}
         new_rotation = convert[diff]
 
         # if we are already correctly rotated, then just move forward
         if new_rotation == curr_rotation:
-            self.path_to_closest.pop(0)
+            self.path_to_closest = self.path_to_closest[1:]
             return {
                 'action': 'move',
             }
@@ -243,10 +274,9 @@ class GameClient:
         assert len(self.path_to_closest) != 0
    
         curr_rotation = player['rotation']
-        next_coords = self.path_to_closest[0]
 
         # either turn to face correct block or move forward
-        next_move = self.generate_step(next_coords, curr_rotation)
+        next_move = self.generate_step(curr_rotation)
 
         return next_move
 
@@ -288,7 +318,7 @@ class GameClient:
     def action_loop(self):
         self.ready_to_start.wait()
         while not self.shutdown_flag.is_set():
-            time.sleep(0.1)
+            time.sleep(0.15)
             if self.game_state:
                 command = self.generate_action(json.loads(self.game_state))  
                 self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))

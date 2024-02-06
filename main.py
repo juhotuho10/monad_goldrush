@@ -12,7 +12,8 @@ from scipy.spatial import distance
 from typing import Dict, Tuple, Set, List, Any
 from itertools import islice
 import pickle
-import sys
+import numpy as np
+from heapq import heappush, heappop
 
 load_dotenv()
 
@@ -81,54 +82,57 @@ class GameClient:
             270: (square & masks[3]) != 0,
         }
     
-    def a_star(self, current_coords: Tuple[int, int], target_coords: Tuple[int, int]) -> List[Tuple[int, int]]:
-        # a star slgorithm to find the shortest route from the current coords to the target coords
-        open_set = set([current_coords])  # Start with the current coords
-        came_from = {}  # For path reconstruction
+    def get_distance(self, point_a, point_b):
+        # more accurate than euclidean distance in a grid
+        return np.sum(np.abs(np.array(point_a) - np.array(point_b)))
+    
+    def a_star(self, current_coords, target_coords):
 
-        g_score = {node: float('inf') for node in self.all_nodes}  # default score to infinity
-        g_score[current_coords] = 0 
-
-        f_score = {node: float('inf') for node in self.all_nodes}  # default score to infinity
-        f_score[current_coords] = distance.euclidean(current_coords, target_coords)  
-
+        open_set = []
+        heappush(open_set, (0 + self.get_distance(current_coords, target_coords), current_coords))
+        came_from = {}
+        
+        g_score = {node: float('inf') for node in self.all_nodes}
+        f_score = {node: float('inf') for node in self.all_nodes}
+        
+        g_score[current_coords] = 0
+        f_score[current_coords] = self.get_distance(current_coords, target_coords)
+        
+        open_set_hash = set([current_coords]) 
+        
         while open_set:
-            # Node in open set with the lowest f_score
-            current = min(open_set, key=lambda coord: f_score[coord])
+            _, current = heappop(open_set)
+            open_set_hash.remove(current)
+            
             if current == target_coords:
                 return self.reconstruct_path(came_from, current)
-
-            open_set.remove(current)
+            
             for neighbor_coords in self.all_nodes[current].surrounding_nodes:
-                tentative_g_score = g_score[current] + distance.euclidean(current, neighbor_coords)
-
-                if tentative_g_score < g_score[neighbor_coords]:
-                    # new best path
+                tentative_g_score = g_score[current] + self.get_distance(current, neighbor_coords)
+                
+                if tentative_g_score < g_score.get(neighbor_coords, float('inf')):
                     came_from[neighbor_coords] = current
                     g_score[neighbor_coords] = tentative_g_score
-                    f_score[neighbor_coords] = g_score[neighbor_coords] + distance.euclidean(neighbor_coords, target_coords)
-                    if neighbor_coords not in open_set:
-                        open_set.add(neighbor_coords)
-
-        # empty path if no path found
-        return []
-
-    def reconstruct_path(self, came_from: Dict[Tuple[int, int], Tuple[int, int]], current: Tuple[int, int]) -> List[Tuple[int, int]]:
-        # reconstructs the A star path
+                    f_score[neighbor_coords] = tentative_g_score + self.get_distance(neighbor_coords, target_coords)
+                    if neighbor_coords not in open_set_hash:
+                        heappush(open_set, (f_score[neighbor_coords], neighbor_coords))
+                        open_set_hash.add(neighbor_coords)
+        
+    
+    def reconstruct_path(self, came_from, current):
         total_path = [current]
         while current in came_from:
             current = came_from[current]
             total_path.append(current)
-        total_path.reverse()
+        total_path.reverse() 
         return total_path[1:]
-
+    
 
     def direction_to_coords(self, direction: int, coords: Tuple[int, int]) -> Tuple[int, int]:
         # converts the degree change to x and y change
         convert = {0: (0, -1), 90: (1, 0), 180: (0, 1), 270: (-1, 0)}
         change = convert[direction]
-        x = coords[0] + change[0]
-        y = coords[1] + change[1]
+        x, y = np.array(coords) + change
 
         return (x, y)
     
@@ -170,27 +174,27 @@ class GameClient:
         min_score = float('inf')
         closest_node = None
 
-        # Sort nodes by distance, taking only the top 10 with the shortest distance, this will save on computation
+        # Sort nodes by distance, taking only the top 50 with the shortest distance, this will save on computation
         # and it's very unlikely that the node wouldn't be in the top 10 shortest distance from goal
         sorted_unexplored_nodes = dict(sorted(unexplored_nodes.items(), key=lambda item: item[1].distance))
-        sorted_unexplored_nodes = dict(islice(sorted_unexplored_nodes.items(), 10))
+        sorted_unexplored_nodes = dict(islice(sorted_unexplored_nodes.items(), 50))
 
         for node_coords, node in sorted_unexplored_nodes.items():
-            path = self.a_star(self.current_node.coords, node_coords)
-            # discount the path to node somewhat so we wont enter a never ending spiral of getting further away
-            path_length = len(path) / 2
+            start_path_len = len(self.a_star(self.starting_coords, node_coords))
+
+            # scale the player path down a little so it doesnt have as much impact, since we want the best path
+            # but it needs to be found semi quickly
+            player_path_len = len(self.a_star(self.current_node.coords, node_coords)) / 4
             
-            if path_length > 0:  
-                score = node.distance + path_length
-                
-                if score < min_score:
-                    min_score = score
-                    closest_node = node
+            score = node.distance + start_path_len + player_path_len
+
+            if score < min_score:
+                min_score = score
+                closest_node = node
         
         self.closest_node = closest_node
 
 
-    
     def add_new_node(self, current_coords: Tuple[int, int], is_explored: bool) -> Node:
         # adds a new node class to coordinates and adds the node to the all nodes dictionary
         dist = distance.euclidean(current_coords, self.goal_node.coords)
@@ -198,7 +202,6 @@ class GameClient:
         self.all_nodes[current_coords] = new_node
 
         return new_node
-    
     
     
     def generate_step(self, curr_rotation: int) -> Dict[str, Any]:
@@ -209,7 +212,8 @@ class GameClient:
 
             diff_2 = tuple(np.array(next_2_coords) - current_coords)
             convert_2 = {(1, -1): 45, (1, 1): 135, (-1, 1): 225, (-1, -1): 315}
-
+            
+            # if we cant step diagonally, then we default to going 1 step at a time sideways
             if diff_2 in convert_2:
                 new_rotation = convert_2[diff_2]
                 # if we are already correctly rotated, then just move forward

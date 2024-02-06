@@ -59,5 +59,8 @@ x    move forward
 
     ------------------------------------------------------------------------------------------------------------------------------------
 
-    x save and load optimal path for follow up runs 
+x   save and load optimal path for follow up runs 
 
+    ------------------------------------------------------------------------------------------------------------------------------------
+
+    change A star so that it uses path from start and optimize the computation

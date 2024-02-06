@@ -11,6 +11,8 @@ import numpy as np
 from scipy.spatial import distance
 from typing import Dict, Tuple, Set, List, Any
 from itertools import islice
+import pickle
+import sys
 
 load_dotenv()
 
@@ -27,19 +29,36 @@ class GameClient:
         self.LEVEL_ID = os.getenv('LEVEL_ID')
         self.FRONTEND_BASE = 'goldrush.monad.fi'
         self.BACKEND_BASE = 'goldrush.monad.fi/backend'
+        self.optimal_path_file = f"{self.LEVEL_ID}_optimal_path.pkl"
         self.game_state = None
         self.ws = None
         self.entityId = None
         self.ready_to_start = threading.Event()
+        self.shutdown_flag = threading.Event()
         self.initialized = False
+        self.starting_coords = None
         
         self.all_nodes = {} # coords: Node
         self.current_node = None
         self.closest_node = None
         self.goal_node = None
+        self.optimal_path = self.load_optimal_path()
 
         self.path_to_closest = [] # [(x,y), (x,y), ...]
 
+        if self.optimal_path is not None:
+            self.path_to_closest = self.optimal_path
+
+    def load_optimal_path(self):
+        # checks if optimal path has been found from a previous run
+        # if optimal path found, we use that to navigate to the goal
+        if os.path.exists(self.optimal_path_file):
+            print("optimal path for level found")
+            with open(self.optimal_path_file, 'rb') as file:
+                return pickle.load(file)
+        else:
+            print("no optimal path found for level")
+            return None
 
     def message(self, action: str, payload=None):
         return json.dumps([action, payload or {}])
@@ -199,6 +218,9 @@ class GameClient:
         # update values based on game state
         player, square = game_state['player'], game_state['square']
         current_coords = tuple(player['position'].values())
+
+        if self.starting_coords is None:
+            self.starting_coords = current_coords
         
         # first time we get here, we set the goal node
         if self.goal_node is None:
@@ -215,7 +237,8 @@ class GameClient:
             self.check_for_surrounding_nodes(player, square, self.current_node)
             self.update_closest_node()
             # coordinate path to the node that is estimated to be closest to goal node
-            self.path_to_closest = self.a_star(self.current_node.coords, self.closest_node.coords)
+            if len(self.path_to_closest) == 0:
+                self.path_to_closest = self.a_star(self.current_node.coords, self.closest_node.coords)
 
         assert len(self.path_to_closest) != 0
    
@@ -247,19 +270,35 @@ class GameClient:
                 self.game_state = payload['gameState']  
                 self.ready_to_start.set()
             else:
-                print(f"Unhandled action type: {action}")
+                if self.current_node.coords == self.goal_node.coords:
+                    print("Game won")
+                    # calculates the optimal path to the goal to use in the next run
+                    if not os.path.exists(self.optimal_path_file):
+                        print("Saving optimal path")
+                        optimal_path = self.a_star(self.starting_coords, self.goal_node.coords)
+                        with open(self.optimal_path_file, 'wb') as file:
+                            pickle.dump(optimal_path, file)
+                    self.shutdown()
+                else:
+                    print(f"Unhandled action type: {action}")
         except Exception as e:
             print(f"Error processing message: {e}")
 
 
     def action_loop(self):
         self.ready_to_start.wait()
-        while True:
+        while not self.shutdown_flag.is_set():
             time.sleep(0.1)
             if self.game_state:
                 command = self.generate_action(json.loads(self.game_state))  
                 self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))
                 self.game_state = None
+    
+    def shutdown(self):
+        # signals all threads to stop
+        self.shutdown_flag.set()  
+        if self.ws:
+            self.ws.close() 
             
 
     def start(self):
@@ -279,6 +318,8 @@ class GameClient:
 
         threading.Thread(target=self.ws.run_forever).start()
         threading.Thread(target=self.action_loop).start()
+
+        
 
 if __name__ == "__main__":
     client = GameClient()

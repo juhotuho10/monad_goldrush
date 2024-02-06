@@ -57,3 +57,7 @@ x    if direction != target dir:
 x        ratate
 x    move forward
 
+    ------------------------------------------------------------------------------------------------------------------------------------
+
+    x save and load optimal path for follow up runs 
+

@@ -61,11 +61,12 @@ class GameClient:
             print("no optimal path found for level")
             return None
         
-    def save_optimal_apth(self):
+    def save_optimal_path(self):
         # calculates the optimal path to the goal to use in the next run
-        if not os.path.exists(self.optimal_path_file) and self.optimal_path is not None:
+        if not os.path.exists(self.optimal_path_file) and self.optimal_path is None:
             print("Saving optimal path")
-            optimal_path = self.a_star(self.starting_coords, self.goal_node.coords)
+            estimate_len, optimal_path = self.a_star(self.starting_coords, self.goal_node.coords)
+            print(estimate_len)
             with open(self.optimal_path_file, 'wb') as file:
                 pickle.dump(optimal_path, file)
 
@@ -82,38 +83,61 @@ class GameClient:
             270: (square & masks[3]) != 0,
         }
     
-    def get_distance(self, point_a, point_b):
+    def get_estimated_distance(self, point_a: Tuple[int, int], point_b: Tuple[int, int]):
         # more accurate than euclidean distance in a grid
-        return np.sum(np.abs(np.array(point_a) - np.array(point_b)))
+        return np.sum(np.abs(np.array(point_b) - np.array(point_a)))
+    
+    def calculate_movement_cost(self, previous_coords: Tuple[int, int], current_coords: Tuple[int, int], next_coords: Tuple[int, int]) -> int:
+        if previous_coords is None:
+            return 2
+        
+        previous_diff = self.calculate_coord_diff(current_coords, previous_coords)
+
+        current_diff = self.calculate_coord_diff(next_coords, current_coords)
+
+        # we dont have to turn, so only a movement is required
+        if current_diff == previous_diff:
+            return 1
+        else:
+            # turning + movement
+            return 2
+        
     
     def a_star(self, current_coords, target_coords):
 
         open_set = []
-        heappush(open_set, (0 + self.get_distance(current_coords, target_coords), current_coords))
+        heappush(open_set, (0 + self.get_estimated_distance(current_coords, target_coords), current_coords))
         came_from = {}
         
         g_score = {node: float('inf') for node in self.all_nodes}
         f_score = {node: float('inf') for node in self.all_nodes}
         
         g_score[current_coords] = 0
-        f_score[current_coords] = self.get_distance(current_coords, target_coords)
+        f_score[current_coords] = self.get_estimated_distance(current_coords, target_coords)
         
-        open_set_hash = set([current_coords]) 
+        open_set_hash = set([current_coords])
         
         while open_set:
             _, current = heappop(open_set)
+
+            previous_coords = came_from.get(current, None)
+
             open_set_hash.remove(current)
             
             if current == target_coords:
-                return self.reconstruct_path(came_from, current)
+                # returns the total path len and the path from node to node
+                return f_score[target_coords], self.reconstruct_path(came_from, current)
             
             for neighbor_coords in self.all_nodes[current].surrounding_nodes:
-                tentative_g_score = g_score[current] + 1
+
+                movement_cost = self.calculate_movement_cost(previous_coords, current, neighbor_coords)
+
+                tentative_g_score = g_score[current] + movement_cost
                 
                 if tentative_g_score < g_score.get(neighbor_coords, float('inf')):
                     came_from[neighbor_coords] = current
                     g_score[neighbor_coords] = tentative_g_score
-                    f_score[neighbor_coords] = tentative_g_score + self.get_distance(neighbor_coords, target_coords)
+                    f_score[neighbor_coords] = tentative_g_score + self.get_estimated_distance(neighbor_coords, target_coords)
                     if neighbor_coords not in open_set_hash:
                         heappush(open_set, (f_score[neighbor_coords], neighbor_coords))
                         open_set_hash.add(neighbor_coords)
@@ -127,6 +151,9 @@ class GameClient:
         total_path.reverse() 
         return total_path[1:]
     
+    def calculate_coord_diff(self, coords_1, coords_2):
+        return tuple(np.array(coords_1) - np.array(coords_2))
+        
 
     def direction_to_coords(self, direction: int, coords: Tuple[int, int]) -> Tuple[int, int]:
         # converts the degree change to x and y change
@@ -158,7 +185,7 @@ class GameClient:
                 for neighbour_coords in new_neighbour_coords:
                     # if difference between neighbours neighbour coord is in valid_diag_neighbours
                     # that means that we can go diagonally there and we will add it to neighbours
-                    diff = tuple(np.array(neighbour_coords) - current_coords)
+                    diff = self.calculate_coord_diff(neighbour_coords, current_coords)
                     if diff in valid_diag_diff:
                         valid_diag_coords.add(neighbour_coords)
 
@@ -205,13 +232,14 @@ class GameClient:
         sorted_unexplored_nodes = dict(islice(sorted_unexplored_nodes.items(), 50))
 
         for node_coords, node in sorted_unexplored_nodes.items():
-            start_path_len = len(self.a_star(self.starting_coords, node_coords))
+            start_path_len, _ = self.a_star(self.starting_coords, node_coords)
 
-            # scale the player path down a little so it doesnt have as much impact, since we want the best path
+            '''# scale the player path down a little so it doesnt have as much impact, since we want the best path
             # but it needs to be found semi quickly
-            player_path_len = len(self.a_star(self.current_node.coords, node_coords)) / 4
+            player_path_len, _ = self.a_star(self.current_node.coords, node_coords)
+            player_path_len /= 4'''
             
-            score = node.distance + start_path_len + player_path_len
+            score = node.distance + start_path_len #+ player_path_len
 
             if score < min_score:
                 min_score = score
@@ -222,7 +250,7 @@ class GameClient:
 
     def add_new_node(self, current_coords: Tuple[int, int], is_explored: bool) -> Node:
         # adds a new node class to coordinates and adds the node to the all nodes dictionary
-        dist = self.get_distance(current_coords, self.goal_node.coords)
+        dist = self.get_estimated_distance(current_coords, self.goal_node.coords)
         new_node = Node(coords=current_coords, explored=is_explored, distance=dist)
         self.all_nodes[current_coords] = new_node
 
@@ -234,8 +262,7 @@ class GameClient:
         current_coords = self.current_node.coords
         
         next_coords = self.path_to_closest[0]
-        x, y = tuple(np.array(next_coords) - current_coords)
-
+        x, y = self.calculate_coord_diff(next_coords, current_coords)
         # difference to angle conversion:
         #(0, -1): 0, (1, 0): 90, (0, 1): 180, (-1, 0): 270, (1, -1): 45... etc.
         new_rotation = (90 + np.degrees(np.arctan2(y, x))) % 360
@@ -278,7 +305,7 @@ class GameClient:
             self.update_closest_node()
             # coordinate path to the node that is estimated to be closest to goal node
             if len(self.path_to_closest) == 0:
-                self.path_to_closest = self.a_star(self.current_node.coords, self.closest_node.coords)
+                _, self.path_to_closest = self.a_star(self.current_node.coords, self.closest_node.coords)
 
         assert len(self.path_to_closest) != 0
    
@@ -311,12 +338,7 @@ class GameClient:
             else:
                 if self.current_node.coords == self.goal_node.coords:
                     print("Game won")
-                    # calculates the optimal path to the goal to use in the next run
-                    if not os.path.exists(self.optimal_path_file):
-                        print("Saving optimal path")
-                        optimal_path = self.a_star(self.starting_coords, self.goal_node.coords)
-                        with open(self.optimal_path_file, 'wb') as file:
-                            pickle.dump(optimal_path, file)
+                    self.save_optimal_path()
                     self.shutdown()
                 else:
                     print(f"Unhandled action type: {action}")

@@ -66,7 +66,7 @@ class GameClient:
         if not os.path.exists(self.optimal_path_file) and self.optimal_path is None:
             print("Saving optimal path")
             estimate_len, optimal_path = self.a_star(self.starting_coords, self.goal_node.coords)
-            print(estimate_len)
+            print(f"estimated path length: {estimate_len}")
             with open(self.optimal_path_file, 'wb') as file:
                 pickle.dump(optimal_path, file)
 
@@ -105,6 +105,9 @@ class GameClient:
     
     def a_star(self, current_coords, target_coords):
 
+        if current_coords == target_coords:
+            return 0, []
+        
         open_set = []
         heappush(open_set, (0 + self.get_estimated_distance(current_coords, target_coords), current_coords))
         came_from = {}
@@ -210,11 +213,20 @@ class GameClient:
 
         for new_coords in surrounding_coords:
             if new_coords in self.all_nodes:
-                new_node = self.all_nodes[new_coords]     
+                new_node = self.all_nodes[new_coords]
+                new_node.distance = self.total_distance_through_node(new_coords)
+                assert new_node.distance == self.all_nodes[new_coords].distance
             else:
                 new_node = self.add_new_node(new_coords, is_explored=False)
 
             new_node.surrounding_nodes.add(current_node.coords)
+
+        self.update_distances(surrounding_coords)
+
+
+    def update_distances(self, coordinates: Set[Tuple[int, int]]):
+        for coord in coordinates:
+            self.all_nodes[coord].distance = self.total_distance_through_node(coord)
 
     
     def update_closest_node(self):
@@ -226,20 +238,17 @@ class GameClient:
         min_score = float('inf')
         closest_node = None
 
-        # Sort nodes by distance, taking only the top 50 with the shortest distance, this will save on computation
-        # and it's very unlikely that the node wouldn't be in the top 10 shortest distance from goal
+        # Sort nodes by distance, taking only the top 20 with the shortest distance, this will save on computation
+        # and it's very unlikely that the node wouldn't be in the top 20 shortest distance from goal
         sorted_unexplored_nodes = dict(sorted(unexplored_nodes.items(), key=lambda item: item[1].distance))
-        sorted_unexplored_nodes = dict(islice(sorted_unexplored_nodes.items(), 50))
+        sorted_unexplored_nodes = dict(islice(sorted_unexplored_nodes.items(), 20))
 
         for node_coords, node in sorted_unexplored_nodes.items():
-            start_path_len, _ = self.a_star(self.starting_coords, node_coords)
-
-            '''# scale the player path down a little so it doesnt have as much impact, since we want the best path
-            # but it needs to be found semi quickly
+            # scale the player path down a little so it doesnt have as much impact, since we want the best path
+            # but it needs to be found semi quickly without hopping between spaces
             player_path_len, _ = self.a_star(self.current_node.coords, node_coords)
-            player_path_len /= 4'''
             
-            score = node.distance + start_path_len #+ player_path_len
+            score = node.distance + (player_path_len * 0.1)
 
             if score < min_score:
                 min_score = score
@@ -247,11 +256,15 @@ class GameClient:
         
         self.closest_node = closest_node
 
+    def total_distance_through_node(self, current_coords: Tuple[int, int]):
+        dist_from_start, _ = self.a_star(self.starting_coords, current_coords)
+        dist_to__end = self.get_estimated_distance(current_coords, self.goal_node.coords)
+        return dist_from_start + dist_to__end
+
 
     def add_new_node(self, current_coords: Tuple[int, int], is_explored: bool) -> Node:
         # adds a new node class to coordinates and adds the node to the all nodes dictionary
-        dist = self.get_estimated_distance(current_coords, self.goal_node.coords)
-        new_node = Node(coords=current_coords, explored=is_explored, distance=dist)
+        new_node = Node(coords=current_coords, explored=is_explored)
         self.all_nodes[current_coords] = new_node
 
         return new_node

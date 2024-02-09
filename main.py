@@ -8,12 +8,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 import numpy as np
-from scipy.spatial import distance
 from typing import Dict, Tuple, Set, List, Any
 from itertools import islice
 import pickle
 import numpy as np
 from heapq import heappush, heappop
+import random
 
 load_dotenv()
 
@@ -49,34 +49,38 @@ class GameClient:
 
         self.max_distance_to_goal = float('inf')
         self.current_distance_to_goal = float('inf')
-        self.max_time = None
-        self.current_time = 10000
+        self.max_time = float('inf')
+        self.current_time = float('inf')
 
         self.path_to_closest = [] # [(x,y), (x,y), ...]
+
+        # only compute all unknown node distance every N times we open a unknown node
+        # otherwise alternate between computing neighbouring nodes and updating close nodes
+        # this helps with performance while having negligible impact on estimation accuracy
+        # 0 = update all nodes all the time
+        self.unknown_node_timer = None # set in the initialization
+        # only adjust the copy value, easier to reset the timer this way
+        self.time_copy = self.unknown_node_timer
 
         # ------------ parameters to adjust ------------ 
 
         # weight for preventing the player from hopping between 2 distant nodes
         # the weight is lowered as the player approaches the goal
-        self.base_weight = 0.75
+        self.base_weight = 1
         # hard minimum for the distance weight
-        self.min_distance_weight = 0.05
+        self.min_distance_weight = 0.05 #0.05
 
         # weight based on time, the lower the remaining time
         # the more the players is discouraged from hopping from node to node
-        self.max_time_weight = 0.15
+        self.max_time_weight = 0.2 # 0.2
 
         # scale for discounting long unknown paths, longer the path, the more we discount it
         # formula: unknown_path_len = unknown_path ** self.unknow_path_discount_factor
         # because 100 known + 50 unknow is better than 150 unknown
-        self.unknow_path_discount_factor = 1.05
+        self.unknow_path_discount_factor = 1.1 # 1.1
 
         # only check number of nodes with the lowest estimated distance from start to goal
-        self.num_nodes_to_check = 15
-
-        # only compute all unknown node distance every N times we open a unknown node
-        # otherwise only compute close unknown nodes, saves on compute
-        self.unknown_node_timer = 10
+        self.num_nodes_to_check = 20 # 20
 
 
     def do_initialization(self, game_state):
@@ -88,12 +92,19 @@ class GameClient:
         goal_coords = tuple(game_state["target"].values())
         self.goal_node = Node(coords=goal_coords, distance=0)
 
-        self.unknown_nodes = self.generate_unknown_nodes(game_state["rows"], game_state["columns"])
+        rows = game_state["rows"]
+        cols = game_state["columns"]
+        self.unknown_nodes = self.generate_unknown_nodes(rows, cols)
 
-        self.max_distance_to_goal = self.get_estimated_distance(self.starting_coords, self.goal_node.coords)
+        self.unknown_node_timer = int(np.floor(rows * cols / 200))
+        self.time_copy = self.unknown_node_timer
+
+        starting_distance = self.get_estimated_distance(self.starting_coords, self.goal_node.coords)
+        self.max_distance_to_goal = starting_distance
+        self.current_distance_to_goal = starting_distance
 
         if self.optimal_path is not None:
-            self.path_to_closest = self.optimal_path 
+            self.path_to_closest = self.optimal_path
 
         self.initialized = True
 
@@ -165,8 +176,8 @@ class GameClient:
         
     
     def get_estimated_distance(self, point_a: Tuple[int, int], point_b: Tuple[int, int]):
-        # more accurate than euclidean distance in a grid
-        return np.linalg.norm(np.array(point_b) - np.array(point_a))
+        # more accurate than euclidean distance in a grid where we can move diagonally
+        return np.max(np.abs(np.array(point_b) - np.array(point_a)))
     
     def calculate_movement_cost(self, previous_coords: Tuple[int, int], current_coords: Tuple[int, int], next_coords: Tuple[int, int]) -> int:
         if previous_coords is None:
@@ -192,7 +203,7 @@ class GameClient:
         open_set = []
         heappush(open_set, (0 + self.get_estimated_distance(current_coords, target_coords), current_coords))
         came_from = {}
-        
+     
         g_score = {node: float('inf') for node in node_dict}
         f_score = g_score.copy()
         
@@ -294,7 +305,6 @@ class GameClient:
 
         current_node.surrounding_nodes.update(surrounding_coords)
 
-        nodes_to_update = []
         for new_coords in surrounding_coords:
             if new_coords in self.found_nodes:
                 new_node = self.found_nodes[new_coords]
@@ -302,7 +312,6 @@ class GameClient:
                 new_node = self.add_new_node(new_coords, is_explored=False)
 
             new_node.surrounding_nodes.add(current_node.coords)
-            nodes_to_update.append(new_node)
 
     def get_closest_unexplored(self) -> Dict[Tuple[int, int], Node]:
         # get self.num_nodes_to_check amount of coords: Node pairs that have least distance
@@ -315,6 +324,11 @@ class GameClient:
 
         return sorted_unexplored_nodes
     
+    def get_unexplored_neighbours(self):
+        neighbouring_coords = self.current_node.surrounding_nodes
+        unexplored_neighbours = {coord: self.found_nodes[coord] for coord in neighbouring_coords if coord in self.unvisited_coords}
+        return unexplored_neighbours
+
     
     def update_unvisited_node_distances(self):
         # update the top N umexplored nodes with the least distance, we dont care about visited node distances so they arent updated
@@ -323,18 +337,36 @@ class GameClient:
         # very compute expensive operation, but worth it in the end since we aren't limited by compute but
         # the amount of steps we take in the environment
 
-        if self.unknown_node_timer == 0:
-            # check all unexplored nodes, only happens once timer runs to 0
-            unexplored_nodes = self.get_closest_unexplored()
-            self.unknown_node_timer = 10
-            print("check all")
-        else:
-            # only check near by unexplored nodes
-            neighbouring_coords = self.current_node.surrounding_nodes
-            unexplored_nodes = {coord: self.found_nodes[coord] for coord in neighbouring_coords if coord in self.unvisited_coords}
-            self.unknown_node_timer -= 1
-            print("check close")
+        if self.time_copy == 0:
+            # check all nodes when time hits 0, resets timer
+            unexplored_nodes = {coord: self.found_nodes[coord] for coord in self.unvisited_coords}
+            self.time_copy = self.unknown_node_timer
+            
+        elif self.time_copy % 2 == 1:
+            # only check nearby unexplored nodes every other time we clear a node
+            unexplored_nodes = self.get_unexplored_neighbours()
+            self.time_copy -= 1
 
+        elif self.time_copy % 2 == 0:
+            # check nearby unexplored nodes and a set of self.unvisited_coords
+            # by taking N amount of coords from the start and then 
+            # extending with them we can cycle the list update coords 
+            N_coords = int(np.ceil(len(self.unvisited_coords) / 4))
+            if N_coords > self.num_nodes_to_check:
+                N_coords = self.num_nodes_to_check
+            elif N_coords < 4:
+                N_coords = 4
+            coords_to_update, self.unvisited_coords = self.unvisited_coords[:N_coords], self.unvisited_coords[N_coords:]
+            self.unvisited_coords.extend(coords_to_update)
+
+            unexplored_nodes = {coord: self.found_nodes[coord] for coord in coords_to_update}
+            unexplored_neighbours = self.get_unexplored_neighbours()
+
+            unexplored_nodes.update(unexplored_neighbours)
+            self.time_copy -= 1
+            
+        else:
+            assert "timer error"
         
         for coords, current_node in unexplored_nodes.items():
             total_distance = self.total_distance_through_node(coords)
@@ -346,7 +378,6 @@ class GameClient:
                 self.unvisited_coords.remove(coords)
             else:
                 current_node.distance = total_distance
-            print()
 
 
     def update_closest_node(self):
@@ -354,13 +385,21 @@ class GameClient:
         min_score = float('inf')
         closest_node = self.found_nodes[self.starting_coords]
 
-        sorted_unexplored_nodes = self.get_closest_unexplored()
+        nodes_to_check = self.get_closest_unexplored()
+
+        unexplored_neighbours = self.get_unexplored_neighbours()
         
+        nodes_to_check.update(unexplored_neighbours)
+
+        # if we see the goal, we want to make sure that we have to most optimal possible path
+        goal_in_nodes = (self.goal_node.coords in nodes_to_check.keys())
+
         # ranges between 0 and self.max_time_weight depending on time left
         # the less time we have left, the less we should be wasting time on going between nodes
         weighted_time_remaining = self.max_time_weight * (1 - (self.current_time / self.max_time))
 
-        for node_coords, node in sorted_unexplored_nodes.items():
+        for node_coords, node in nodes_to_check.items():
+
             # scale the player path down a little so it doesnt have as much impact, since we want the best path
             # but it needs to be found semi quickly without hopping between spaces
             player_path_len, _ = self.a_star(self.found_nodes, self.current_node.coords, node_coords)
@@ -369,17 +408,20 @@ class GameClient:
             # hopping between the nodes, but towards the end, we want it go closer and closer to 0
             # distance_weight values range from aound 1 to 0
             # the higher the base weight, the faster the initial search will be but at the risk of producing sub optimal final path
-            
-            distance_weight = self.base_weight * (self.current_distance_to_goal / self.max_distance_to_goal)
-            distance_weight = max([self.min_distance_weight, distance_weight])
-            weighted_player_path = (player_path_len * distance_weight) + (player_path_len * weighted_time_remaining)
-            score = node.distance + weighted_player_path
+            if not goal_in_nodes:
+                distance_weight = self.base_weight * (self.current_distance_to_goal / self.max_distance_to_goal)
+                distance_weight = max([self.min_distance_weight, distance_weight])
+                weighted_player_path = player_path_len * (distance_weight + weighted_time_remaining)
+            else:
+                weighted_player_path = 0
 
+            score = node.distance + weighted_player_path
+            
             if score < min_score:
                 min_score = score
                 closest_node = node
+                
 
-        
         self.closest_node = closest_node
     
     def total_distance_through_node(self, current_coords: Tuple[int, int]):
@@ -439,8 +481,7 @@ class GameClient:
             self.do_initialization(game_state)
 
         self.current_time = game_state["timer"]
-
-        self.current_distance = self.get_estimated_distance(current_coords, self.goal_node.coords)
+        self.current_distance_to_goal = self.get_estimated_distance(current_coords, self.goal_node.coords)
 
         # check if we have entered a new or unexplored node
         if current_coords in self.found_nodes and self.found_nodes[current_coords].explored:
@@ -451,10 +492,10 @@ class GameClient:
             self.delete_unknow_coord(current_coords)
             self.current_node = self.add_new_node(current_coords, is_explored=True)
             self.update_surrounding_nodes(square, self.current_node)
-            self.update_unvisited_node_distances()
-            self.update_closest_node()
             # coordinate path to the node that is estimated to be closest to goal node
             if len(self.path_to_closest) == 0:
+                self.update_unvisited_node_distances()
+                self.update_closest_node()
                 _, self.path_to_closest = self.a_star(self.found_nodes, self.current_node.coords, self.closest_node.coords)
    
         curr_rotation = player['rotation']

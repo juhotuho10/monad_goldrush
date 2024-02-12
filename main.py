@@ -13,7 +13,6 @@ from itertools import islice
 import pickle
 import numpy as np
 from heapq import heappush, heappop
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 load_dotenv()
 
@@ -68,26 +67,26 @@ class GameClient:
         # ------------ parameters to adjust ------------ 
 
         # does a super comprehensive search for the most optimal path, SUPER compute intensive
-        self.comprehensive_search = True
+        self.comprehensive_search = False
 
         # weight for preventing the player from hopping between 2 distant nodes
         # the weight is lowered as the player approaches the goal
-        self.base_weight = 0.5 # 2
+        self.base_weight = 6 # 2
         # hard minimum for the distance weight
-        self.min_distance_weight = 0.05 #0.05
+        self.min_distance_weight = 0.2 #0.05
 
         # weight based on time, the lower the remaining time
         # the more the players is discouraged from hopping from node to node
-        self.max_time_weight = 0.2 # 0.2
+        self.max_time_weight = 1.2 # 0.2
 
         # scale for discounting long unknown paths, longer the path, the more we discount it
         # formula: unknown_path_len = unknown_path ** self.unknow_path_discount_factor
         # because 100 known + 50 unknow is better than 150 unknown
-        self.unknow_path_discount_factor = 1.1 # 1.1
+        self.unknow_path_discount_factor = 1.4 # 1.1
 
         # only check number of nodes with the lowest estimated distance from start to goal
-        self.num_nodes_to_check = 15 # 20
-        self.perc_nodes_to_update = 1 # 0.15
+        self.num_nodes_to_check = 10 # 20
+        self.percent_nodes_to_update = 0.05 # 0.15
 
 
     def do_initialization(self, game_state):
@@ -238,7 +237,7 @@ class GameClient:
         return tuple(no_rotation_coord)
 
     
-    def a_star(self, node_dict, current_coords, target_coords):
+    def a_star(self, node_dict: Dict[Tuple[int, int], Node], current_coords: Tuple[int, int], target_coords: Tuple[int, int]):
 
         if current_coords == target_coords:
             return 0, []
@@ -365,6 +364,24 @@ class GameClient:
 
             new_node.surrounding_nodes.add(current_node.coords)
 
+    def add_goal_node(self):
+
+        self.add_new_node(self.goal_node.coords, is_explored=True)
+        goal_coords = self.goal_node.coords
+        valid_neighbours = ((-1, 0), (0, -1), (0, 1), (1, 0))
+
+        goal_neighbours = set()
+        for coord in valid_neighbours:
+            potential_coord = self.add_coords(goal_coords, coord)
+            if potential_coord in self.found_nodes:
+                goal_neighbours.add(potential_coord)
+                self.found_nodes[potential_coord].surrounding_nodes.add(goal_coords)
+
+        valid_diag_neighbours = self.get_diagonal_neighbours(self.goal_node.coords, goal_neighbours)
+        for coord in valid_diag_neighbours:
+            self.found_nodes[coord].surrounding_nodes.add(goal_coords)
+
+
     def get_closest_unexplored(self) -> Dict[Tuple[int, int], Node]:
         # get self.num_nodes_to_check amount of coords: Node pairs that have least distance
 
@@ -409,7 +426,7 @@ class GameClient:
             # check nearby unexplored nodes and a set of self.unvisited_coords
             # by taking N amount of coords from the start and then 
             # extending with them we can cycle the list update coords 
-            N_coords = int(np.ceil(len(self.unvisited_coords) * self.perc_nodes_to_update))
+            N_coords = int(np.ceil(len(self.unvisited_coords) * self.percent_nodes_to_update))
             N_coords = int(np.clip(N_coords, 4, self.num_nodes_to_check))
             coords_to_update, self.unvisited_coords = self.unvisited_coords[:N_coords], self.unvisited_coords[N_coords:]
             self.unvisited_coords.extend(coords_to_update)
@@ -439,10 +456,15 @@ class GameClient:
         min_score = float('inf')
         closest_node = self.found_nodes[self.starting_coords]
         
-        nodes_to_check = self.get_closest_unexplored()
         unexplored_neighbours = self.get_unexplored_neighbours()
+        if len(unexplored_neighbours) == 0:
+            # if we dont have close neighbours, we check all the nodes instead of some of them
+            # this helps with pathing and avoids unnecessary jumping
+            nodes_to_check = {coord: self.found_nodes[coord] for coord in self.unvisited_coords}
+        else:
+            nodes_to_check = self.get_closest_unexplored()
+            nodes_to_check.update(unexplored_neighbours)
         
-        nodes_to_check.update(unexplored_neighbours)
 
         # if we see the goal, we want to make sure that we have to most optimal possible path
         goal_in_nodes = (self.goal_node.coords in nodes_to_check.keys())
@@ -456,6 +478,8 @@ class GameClient:
             # scale the player path down a little so it doesnt have as much impact, since we want the best path
             # but it needs to be found semi quickly without hopping between spaces
             player_path_len, _ = self.a_star(self.found_nodes, self.current_node.coords, node_coords)
+
+            assert player_path_len is not None
 
             # we scale the path from player to the node throughout the game, so at the start, we care a lot about not wasting time
             # hopping between the nodes, but towards the end, we want it go closer and closer to 0
@@ -560,26 +584,23 @@ class GameClient:
                 self.update_closest_node()
                 _, self.path_to_closest = self.a_star(self.found_nodes, self.current_node.coords, self.closest_node.coords)
    
-        if (self.path_to_closest[0] == self.goal_node.coords) and not self.running_optimal_path:
-            self.add_new_node(self.goal_node.coords, is_explored=True)
-            goal_coords = self.goal_node.coords
-            valid_neighbours = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
-            for coord in valid_neighbours:
-                potential_coord = self.add_coords(goal_coords, coord)
-                if potential_coord in self.found_nodes:
-                    self.found_nodes[potential_coord].surrounding_nodes.add(goal_coords)
+        if not self.running_optimal_path and (self.path_to_closest[0] == self.goal_node.coords):
+            self.add_goal_node()
 
-            _, self.path_to_closest = self.a_star(self.found_nodes, self.starting_coords, goal_coords)
+            _, self.path_to_closest = self.a_star(self.found_nodes, self.starting_coords, self.goal_node.coords)
             next_move = {
                 'action': 'reset',
             }
             self.running_optimal_path = True        
-        else:
+        elif self.current_node.coords != self.goal_node.coords:
             curr_rotation = player['rotation']
             # either turn to face correct block or move forward
-            
-            next_move = self.generate_step(curr_rotation)
 
+            next_move = self.generate_step(curr_rotation)
+        else:
+            next_move = {
+                '': '',
+            }
 
         return next_move
 
@@ -599,6 +620,7 @@ class GameClient:
 
         try:
             action, payload = json.loads(message)
+            print(action, payload)
             if action == 'game-instance':
                 self.game_state = payload['gameState']  
                 self.ready_to_start.set()
@@ -618,13 +640,14 @@ class GameClient:
         while not self.shutdown_flag.is_set():
             start = time.perf_counter()
             if self.game_state:
-                command = self.generate_action(json.loads(self.game_state))  
+                command = self.generate_action(json.loads(self.game_state))
                 self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))
                 self.game_state = None
+
             time_used = time.perf_counter() - start
-            if time_used < 0.05:
+            if time_used < 0.1:
                 # small rate limit if needed
-                time.sleep(0.05 - time_used)
+                time.sleep(0.1 - time_used)
     
     def shutdown(self):
         # signals all threads to stop

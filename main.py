@@ -65,13 +65,16 @@ class GameClient:
         self.time_copy = self.unknown_node_timer
 
         # ------------ parameters to adjust ------------ 
+        
+        # turns on some printing for logging purposes
+        self.verbose = False
 
         # does a super comprehensive search for the most optimal path, SUPER compute intensive
         self.comprehensive_search = False
 
         # weight for preventing the player from hopping between 2 distant nodes
         # the weight is lowered as the player approaches the goal
-        self.base_weight = 6 # 2
+        self.base_weight = 3 # 2
         # hard minimum for the distance weight
         self.min_distance_weight = 0.2 #0.05
 
@@ -82,7 +85,7 @@ class GameClient:
         # scale for discounting long unknown paths, longer the path, the more we discount it
         # formula: unknown_path_len = unknown_path ** self.unknow_path_discount_factor
         # because 100 known + 50 unknow is better than 150 unknown
-        self.unknow_path_discount_factor = 1.4 # 1.1
+        self.unknow_path_discount_factor = 1.2 # 1.1
 
         # only check number of nodes with the lowest estimated distance from start to goal
         self.num_nodes_to_check = 10 # 20
@@ -620,7 +623,6 @@ class GameClient:
 
         try:
             action, payload = json.loads(message)
-            print(action, payload)
             if action == 'game-instance':
                 self.game_state = payload['gameState']  
                 self.ready_to_start.set()
@@ -637,12 +639,28 @@ class GameClient:
 
     def action_loop(self):
         self.ready_to_start.wait()
+        last_message = time.time()
+        last_command = None
+        time_taken = 0
         while not self.shutdown_flag.is_set():
             start = time.perf_counter()
             if self.game_state:
                 command = self.generate_action(json.loads(self.game_state))
+                last_command = command
                 self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))
                 self.game_state = None
+                last_message = time.time()
+            else:
+                time_taken = time.time() - last_message
+                if self.verbose:
+                    print(f"last message was sent: {time_taken}")
+                
+                if time_taken > 5 and last_command is not None:
+                    self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': last_command}))
+                    last_message = time.time()
+                    print("command sent again")
+                
+                
 
             time_used = time.perf_counter() - start
             if time_used < 0.1:

@@ -176,6 +176,7 @@ class GameClient:
         return unknown 
     
     def delete_unknow_coord(self, current_coords):
+        # deletes a coord from self.unknown_nodes and all the connections to the node
         assert current_coords in self.unknown_nodes
 
         # delete neighbouring connections
@@ -189,7 +190,7 @@ class GameClient:
         del self.unknown_nodes[current_coords]
 
     def update_unknown_coord(self, current_node: Node):
-
+        # changes a coord from self.all_nodes and all the connections to the node
         current_coords = current_node.coords
         neighbour_nodes = current_node.surrounding_nodes
 
@@ -214,11 +215,13 @@ class GameClient:
         return max((abs(x_1 - x_2), abs(y_1 - y_2)))
     
     def add_coords(self, point_a: Tuple[int, int], point_b: Tuple[int, int]):
+        # adds 2 coords together
         x_1, y_1 = point_a
         x_2, y_2 = point_b
         return (x_1 + x_2, y_1 + y_2)
     
     def calculate_movement_cost(self, straigh_movement_coords: Tuple[int, int], neighbor_coords: Tuple[int, int]) -> int:
+        # checks if the move has to change direction or not
         if straigh_movement_coords is None:
             return 1
 
@@ -232,6 +235,7 @@ class GameClient:
 
         
     def get_best_coord_movement(self, previous_coords: Tuple[int, int], current_coords: Tuple[int, int]):
+        # calculated the coordinates that we have to move to in order to not have a movement cost
         if previous_coords is None:
             return None
         previous_coords = np.array(previous_coords)
@@ -242,6 +246,7 @@ class GameClient:
 
     
     def a_star(self, node_dict: Dict[Tuple[int, int], Node], current_coords: Tuple[int, int], target_coords: Tuple[int, int]):
+        # A star pathfinding algorithm that gets the path of coordinates from one point to the next
 
         if current_coords == target_coords:
             return 0, []
@@ -296,6 +301,7 @@ class GameClient:
         return None, None
     
     def reconstruct_path(self, came_from, current):
+        # support function for A star
         total_path = [current]
         while current in came_from:
             current = came_from[current]
@@ -303,8 +309,11 @@ class GameClient:
         total_path.reverse() 
         return total_path[1:]
     
-    def calculate_coord_diff(self, coords_1, coords_2):
-        return tuple(np.array(coords_1) - np.array(coords_2))
+    def calculate_coord_diff(self, point_a, point_b):
+        # returns the difference for coords
+        x_1, y_1 = point_a
+        x_2, y_2 = point_b
+        return (x_1 - x_2, y_1 - y_2)
         
 
     def direction_to_coords(self, direction: int, coords: Tuple[int, int]) -> Tuple[int, int]:
@@ -327,6 +336,7 @@ class GameClient:
         return surrounding_coords
     
     def get_diagonal_neighbours(self, current_coords: Tuple[int, int], surrounding_coords: set) -> Set[Tuple[int, int]]:
+        # returns valid known diagonal neighbours that can be accessed by the node
         valid_diag_diff = ((-1, 1), (1, 1), (1, -1), (-1, -1))
         valid_diag_coords = set()
         for coord in surrounding_coords:
@@ -369,7 +379,7 @@ class GameClient:
             new_node.surrounding_nodes.add(current_node.coords)
 
     def add_goal_node(self):
-
+        # adds the goal node and updates the neighbours with connection to the goal
         self.add_new_node(self.goal_node.coords, is_explored=True)
         goal_coords = self.goal_node.coords
         valid_neighbours = ((-1, 0), (0, -1), (0, 1), (1, 0))
@@ -401,6 +411,7 @@ class GameClient:
         return sorted_unexplored_nodes
     
     def get_unexplored_neighbours(self):
+        # check surrounding nodes around the player and returns the unvisited ones
         neighbouring_coords = self.current_node.surrounding_nodes
         unexplored_neighbours = {coord: self.found_nodes[coord] for coord in neighbouring_coords if coord in self.unvisited_coords}
         return unexplored_neighbours
@@ -506,7 +517,7 @@ class GameClient:
         self.closest_node = closest_node
     
     def total_distance_through_node(self, current_coords: Tuple[int, int]):
-    
+        # finds the total distance from start to the end when it goes through the node
         dist_from_start, _ = self.a_star(self.found_nodes, self.starting_coords, current_coords)
 
         if not self.comprehensive_search:
@@ -610,6 +621,7 @@ class GameClient:
 
 
     def create_game(self):
+        # creates a game connection
         url = f'https://{self.BACKEND_BASE}/api/levels/{self.LEVEL_ID}'
         headers = {'Authorization': self.PLAYER_TOKEN}
         response = requests.post(url, headers=headers)
@@ -621,7 +633,7 @@ class GameClient:
         return response.json()
 
     def on_message(self, ws, message):
-
+        # communicates with the server
         try:
             action, payload = json.loads(message)
             if action == 'game-instance':
@@ -638,6 +650,7 @@ class GameClient:
             print(f"Error processing message: {e}")
 
     def reconnect(self):
+        # attempts to reconnect to the server
         print("Connection closed, attempting to reconnect...")
         if self.ws:
             try:

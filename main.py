@@ -3,6 +3,7 @@ import json
 import webbrowser
 import requests
 import websocket
+from websocket import WebSocketConnectionClosedException
 from dotenv import load_dotenv
 import threading
 import time
@@ -67,7 +68,7 @@ class GameClient:
         # ------------ parameters to adjust ------------ 
         
         # turns on some printing for logging purposes
-        self.verbose = False
+        self.verbose = True
 
         # does a super comprehensive search for the most optimal path, SUPER compute intensive
         self.comprehensive_search = False
@@ -636,6 +637,21 @@ class GameClient:
         except Exception as e:
             print(f"Error processing message: {e}")
 
+    def reconnect(self):
+        print("Connection closed, attempting to reconnect...")
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception as e:
+                print(f"Error closing WebSocket: {e}")
+        
+        # Re-establish the connection
+        ws_url = f'wss://{self.BACKEND_BASE}/{self.PLAYER_TOKEN}/'
+        self.ws = websocket.WebSocketApp(ws_url,
+                                         on_message=self.on_message,
+                                         on_open=lambda ws: self.ws.send(self.message('sub-game', {'id': self.entityId})))
+        threading.Thread(target=lambda: self.ws.run_forever()).start()
+
 
     def action_loop(self):
         self.ready_to_start.wait()
@@ -647,18 +663,16 @@ class GameClient:
             if self.game_state:
                 command = self.generate_action(json.loads(self.game_state))
                 last_command = command
-                self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))
+                self.send_command(command)
                 self.game_state = None
                 last_message = time.time()
             else:
                 time_taken = time.time() - last_message
-                if self.verbose:
-                    print(f"last message was sent: {time_taken}")
-                
                 if time_taken > 5 and last_command is not None:
-                    self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': last_command}))
+                    if self.verbose:
+                        print(f"last message was sent: {time_taken}")
+                    self.send_command(last_command)
                     last_message = time.time()
-                    print("command sent again")
                 
                 
 
@@ -667,6 +681,20 @@ class GameClient:
                 # small rate limit if needed
                 time.sleep(0.1 - time_used)
     
+    def send_command(self, command):
+        for _ in range(5):
+            try:
+                self.ws.send(self.message('run-command', {'gameId': self.entityId, 'payload': command}))
+                return
+            except WebSocketConnectionClosedException:
+                self.reconnect()
+                time.sleep(0.1)
+
+        print("failed to connect")
+        self.shutdown()
+                
+
+
     def shutdown(self):
         # signals all threads to stop
         self.shutdown_flag.set()  

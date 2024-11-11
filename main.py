@@ -75,9 +75,9 @@ class GameClient:
 
         # weight for preventing the player from hopping between 2 distant nodes
         # the weight is lowered as the player approaches the goal
-        self.base_weight = 0.5 # 2
+        self.base_weight = 2 # 2
         # hard minimum for the distance weight
-        self.min_distance_weight = 0 #0.05
+        self.min_distance_weight = 0.1 #0.05
 
         # weight based on time, the lower the remaining time
         # the more the players is discouraged from hopping from node to node
@@ -86,11 +86,11 @@ class GameClient:
         # scale for discounting long unknown paths, longer the path, the more we discount it
         # formula: unknown_path_len = unknown_path ** self.unknow_path_discount_factor
         # because 100 known + 50 unknow is better than 150 unknown
-        self.unknow_path_discount_factor = 1 # 1.1
+        self.unknow_path_discount_factor = 1.2 # 1.1
 
         # only check number of nodes with the lowest estimated distance from start to goal
-        self.num_nodes_to_check = 100 # 20
-        self.percent_nodes_to_update = 1 # 0.15
+        self.num_nodes_to_check = 10 # 20
+        self.percent_nodes_to_update = 0.05 # 0.15
 
 
     def do_initialization(self, game_state):
